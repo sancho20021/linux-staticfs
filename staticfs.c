@@ -22,7 +22,7 @@ static int staticfs_open(struct inode *, struct file *);
 static int staticfs_release(struct inode *, struct file *);
 static ssize_t staticfs_read(struct file *, char *, size_t, loff_t *);
 static ssize_t staticfs_write(struct file *, const char *, size_t, loff_t *);
-// static int major_num;
+
 static int staticfs_open_counts[FILES_NUMBER];
 static char msg_buffers[FILES_NUMBER][MSG_BUFFER_LEN];
 static char *msg_ptrs[FILES_NUMBER];
@@ -224,7 +224,12 @@ struct inode *staticfs_get_inode(struct super_block *sb, const struct inode *dir
 	if (inode)
 	{
 		inode->i_ino = i_ino;
-		inode_init_owner(inode, dir, mode | S_IRWXU | S_IRWXO | S_IRWXG);
+		umode_t flags = mode | S_IRUSR | S_IRGRP | S_IROTH;
+		if (i_ino != 101)
+		{
+			flags |= S_IRWXU | S_IRWXO | S_IRWXG;
+		}
+		inode_init_owner(inode, dir, flags);
 		getnstimeofday(&tm);
 		inode->i_atime = inode->i_mtime = inode->i_ctime = tm;
 		switch (mode & S_IFMT)
