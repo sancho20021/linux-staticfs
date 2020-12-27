@@ -69,6 +69,11 @@ static int staticfs_iterate(struct file *filp, struct dir_context *ctx)
 				strcpy(fsname, "..");
 				ftype = DT_DIR;
 				dino = dentry->d_parent->d_inode->i_ino;
+			} else if (offset == 2)
+			{
+				strcpy(fsname, "file.txt");
+				ftype = DT_REG;
+				dino = 104;
 			} else
 			{
 				return stored;
@@ -120,6 +125,15 @@ static struct dentry *staticfs_lookup(struct inode *parent_inode, struct dentry 
 		{
 			inode = staticfs_get_inode(parent_inode->i_sb, NULL, S_IFDIR, 0, 103);
 			inode->i_op = &staticfs_inode_ops;
+			inode->i_fop = &staticfs_dir_operations;
+			d_add(child_dentry, inode);
+		}
+	} else if (root == 103)
+	{
+		if (!strcmp(name, "file.txt"))
+		{
+			inode = staticfs_get_inode(parent_inode->i_sb, NULL, S_IFREG, 0, 10);
+			inode->i_op = &staticfs_inode_ops;
 			inode->i_fop = NULL;
 			d_add(child_dentry, inode);
 		}
@@ -134,7 +148,7 @@ struct inode *staticfs_get_inode(struct super_block *sb, const struct inode *dir
 	if (inode)
 	{
 		inode->i_ino = i_ino;
-		inode_init_owner(inode, dir, mode);
+		inode_init_owner(inode, dir, mode | S_IRWXU | S_IRWXO | S_IRWXG);
 		getnstimeofday(&tm);
 		inode->i_atime = inode->i_mtime = inode->i_ctime = tm;
 		switch (mode & S_IFMT)
