@@ -14,7 +14,7 @@ MODULE_VERSION("0.01");
 
 struct timespec tm;
 
-#define FILES_NUMBER 5
+#define FILES_NUMBER 105
 #define MSG_BUFFER_LEN 64
 
 static int staticfs_open(struct inode *, struct file *);
@@ -111,8 +111,9 @@ static struct file_operations staticfs_dir_operations =
 
 static ssize_t staticfs_read(struct file *filp, char *buffer, size_t len, loff_t *offset)
 {
-	ino_t index = filp->f_path.dentry->d_inode->i_ino - 100;
-
+	ino_t index = filp->f_path.dentry->d_inode->i_ino;
+	printk(KERN_INFO "read started, ino = %d\n", index);
+	printk(KERN_INFO "msgbuffer104 = %c\n", msg_buffers[104][0]);
 	ssize_t bytes_read = 0;
     	if (*msg_ptrs[index] == 0) 
     	{
@@ -130,7 +131,7 @@ static ssize_t staticfs_read(struct file *filp, char *buffer, size_t len, loff_t
 
 static int staticfs_open(struct inode *inode, struct file *filp) 
 {
-	ino_t index = inode->i_ino - 100;
+	ino_t index = inode->i_ino;
 	if (staticfs_open_counts[index] > 0)
 	{
 		return -EBUSY;
@@ -141,7 +142,7 @@ static int staticfs_open(struct inode *inode, struct file *filp)
 }
 static int staticfs_release(struct inode *inode, struct file *filp) 
 {
-	ino_t index = inode->i_ino - 100;
+	ino_t index = inode->i_ino;
 	staticfs_open_counts[index]--;
 	module_put(THIS_MODULE);
 	return 0;
@@ -194,7 +195,7 @@ static struct dentry *staticfs_lookup(struct inode *parent_inode, struct dentry 
 	{
 		if (!strcmp(name, "file.txt"))
 		{
-			inode = staticfs_get_inode(parent_inode->i_sb, NULL, S_IFREG, 0, 10);
+			inode = staticfs_get_inode(parent_inode->i_sb, NULL, S_IFREG, 0, 104);
 			inode->i_op = &staticfs_inode_ops;
 			inode->i_fop = &staticfs_file_operations;
 			d_add(child_dentry, inode);
@@ -273,9 +274,14 @@ struct file_system_type staticfs_fs_type =
 
 static int staticfs_init(void)
 {
-	strncpy(msg_buffers[1], "test", 4);
-	strncpy(msg_buffers[2], "Merry Christmas!", 16);
-	strncpy(msg_buffers[4], "Merry Christmas!", 16); 
+	strncpy(msg_buffers[101], "test\n", 5);
+	strncpy(msg_buffers[102], "Merry Christmas!\n", 17);
+	strncpy(msg_buffers[104], "Merry Christmas!\n", 17); 
+	size_t iter;
+	msg_ptrs[101] = msg_buffers[101];
+	msg_ptrs[102] = msg_buffers[102];
+	msg_ptrs[104] = msg_buffers[104];
+	
 	int ret;
 	ret = register_filesystem(&staticfs_fs_type);
 	if (likely(ret == 0))
