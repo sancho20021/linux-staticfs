@@ -2,6 +2,10 @@
 #include <linux/module.h>
 #include <linux/fs.h>
 #include <linux/time.h>
+#include <linux/kernel.h>
+#include <linux/sched.h>
+#include <linux/fs_struct.h>
+#include <asm/uaccess.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Pak Aleksandr");
@@ -9,6 +13,18 @@ MODULE_DESCRIPTION("Static filesystem Linux module");
 MODULE_VERSION("0.01");
 
 struct timespec tm;
+
+#define FILES_NUMBER 5
+#define MSG_BUFFER_LEN 64
+
+static int staticfs_open(struct inode *, struct file *);
+static int staticfs_release(struct inode *, struct file *);
+static ssize_t staticfs_read(struct file *, char *, size_t, loff_t *);
+static ssize_t staticfs_write(struct file *, const char *, size_t, loff_t *);
+// static int major_num;
+static int staticfs_open_counts[FILES_NUMBER];
+static char msg_buffers[FILES_NUMBER][MSG_BUFFER_LEN];
+static char *msg_ptrs[FILES_NUMBER];
 
 static int staticfs_iterate(struct file *filp, struct dir_context *ctx)
 {
@@ -93,6 +109,52 @@ static struct file_operations staticfs_dir_operations =
 	.iterate = staticfs_iterate,
 };
 
+static ssize_t staticfs_read(struct file *filp, char *buffer, size_t len, loff_t *offset)
+{
+	ino_t index = filp->f_path.dentry->d_inode->i_ino - 100;
+
+	ssize_t bytes_read = 0;
+    	if (*msg_ptrs[index] == 0) 
+    	{
+        	msg_ptrs[index] = msg_buffers[index];
+		return 0;
+    	}
+    	while (len > 0 && *msg_ptrs[index]) 
+    	{
+        	put_user(*(msg_ptrs[index]++), buffer++);
+        	len--;
+        	bytes_read++;
+    	}
+	return bytes_read;
+}
+
+static int staticfs_open(struct inode *inode, struct file *filp) 
+{
+	ino_t index = inode->i_ino - 100;
+	if (staticfs_open_counts[index] > 0)
+	{
+		return -EBUSY;
+	}
+	staticfs_open_counts[index]++;
+	try_module_get(THIS_MODULE);
+	return 0;
+}
+static int staticfs_release(struct inode *inode, struct file *filp) 
+{
+	ino_t index = inode->i_ino - 100;
+	staticfs_open_counts[index]--;
+	module_put(THIS_MODULE);
+	return 0;
+}
+
+static struct file_operations staticfs_file_operations = 
+{
+	.read = staticfs_read,
+	// .write = staticfs_write,
+    	.open = staticfs_open,
+    	.release = staticfs_release
+};
+
 struct inode *staticfs_get_inode(struct super_block *sb, const struct inode *dir, umode_t mode, dev_t dev, int i_ino);
 
 static struct dentry *staticfs_lookup(struct inode *parent_inode, struct dentry *child_dentry, unsigned int flag);
@@ -113,13 +175,13 @@ static struct dentry *staticfs_lookup(struct inode *parent_inode, struct dentry 
 		{
 			inode = staticfs_get_inode(parent_inode->i_sb, NULL, S_IFREG, 0, 101);
 			inode->i_op = &staticfs_inode_ops;
-			inode->i_fop = NULL;
+			inode->i_fop = &staticfs_file_operations;
 			d_add(child_dentry, inode);
 		} else if (!strcmp(name, "file.txt"))
 		{
 			inode = staticfs_get_inode(parent_inode->i_sb, NULL, S_IFREG, 0, 102);
 			inode->i_op = &staticfs_inode_ops;
-			inode->i_fop = NULL;
+			inode->i_fop = &staticfs_file_operations;
 			d_add(child_dentry, inode);
 		} else if (!strcmp(name, "dir"))
 		{
@@ -134,7 +196,7 @@ static struct dentry *staticfs_lookup(struct inode *parent_inode, struct dentry 
 		{
 			inode = staticfs_get_inode(parent_inode->i_sb, NULL, S_IFREG, 0, 10);
 			inode->i_op = &staticfs_inode_ops;
-			inode->i_fop = NULL;
+			inode->i_fop = &staticfs_file_operations;
 			d_add(child_dentry, inode);
 		}
 	}
@@ -211,6 +273,9 @@ struct file_system_type staticfs_fs_type =
 
 static int staticfs_init(void)
 {
+	strncpy(msg_buffers[1], "test", 4);
+	strncpy(msg_buffers[2], "Merry Christmas!", 16);
+	strncpy(msg_buffers[4], "Merry Christmas!", 16); 
 	int ret;
 	ret = register_filesystem(&staticfs_fs_type);
 	if (likely(ret == 0))
