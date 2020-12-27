@@ -4,7 +4,7 @@
 #include <linux/time.h>
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Ivanov Ivan");
+MODULE_AUTHOR("Pak Aleksandr");
 MODULE_DESCRIPTION("Static filesystem Linux module");
 MODULE_VERSION("0.01");
 
@@ -12,7 +12,74 @@ struct timespec tm;
 
 static int staticfs_iterate(struct file *filp, struct dir_context *ctx)
 {
-	return 0;
+	char fsname[10];
+	struct dentry *dentry = filp->f_path.dentry;
+	struct inode *i = dentry->d_inode;
+	unsigned long offset = filp->f_pos;
+	int stored = 0;
+	unsigned char ftype;
+	ino_t ino = i->i_ino;
+	ino_t dino;	
+	while (true)
+	{
+		if (ino == 100)
+		{
+			if (offset == 0)
+			{
+				strcpy(fsname, ".");
+				ftype = DT_DIR;
+				dino = ino;
+			} 
+			else if (offset == 1)
+			{
+				strcpy(fsname, "..");
+				ftype = DT_DIR;
+				dino = dentry->d_parent->d_inode->i_ino;
+			}
+			else if (offset == 2)
+			{
+				strcpy(fsname, "test.txt");
+				ftype = DT_REG;
+				dino = 101;
+			}
+			else if (offset == 3)
+			{
+				strcpy(fsname, "file.txt");
+				ftype = DT_REG;
+				dino = 102;
+			} else if (offset == 4)
+			{
+				strcpy(fsname, "dir");
+				ftype = DT_DIR;
+				dino = 103;
+			} else
+			{
+				return stored;
+			}
+		} else if (ino == 103)
+		{
+			if (offset == 0)
+			{
+				strcpy(fsname, ".");
+				ftype = DT_DIR;
+				dino = ino;
+			} 
+			else if (offset == 1)
+			{
+				strcpy(fsname, "..");
+				ftype = DT_DIR;
+				dino = dentry->d_parent->d_inode->i_ino;
+			} else
+			{
+				return stored;
+			}
+		}	
+		dir_emit(ctx, fsname, strlen(fsname), dino, ftype);
+		stored++;
+		offset++;
+		ctx->pos = offset;
+	}
+	return stored;
 }
 
 static struct file_operations staticfs_dir_operations = 
@@ -21,15 +88,45 @@ static struct file_operations staticfs_dir_operations =
 	.iterate = staticfs_iterate,
 };
 
-static struct dentry *staticfs_lookup(struct inode *parent_inode, struct dentry *child_dentry, unsigned int flag)
-{
-	return NULL;
-}
+struct inode *staticfs_get_inode(struct super_block *sb, const struct inode *dir, umode_t mode, dev_t dev, int i_ino);
+
+static struct dentry *staticfs_lookup(struct inode *parent_inode, struct dentry *child_dentry, unsigned int flag);
 
 static struct inode_operations staticfs_inode_ops = 
 {
 	.lookup = staticfs_lookup,
 };
+
+static struct dentry *staticfs_lookup(struct inode *parent_inode, struct dentry *child_dentry, unsigned int flag)
+{
+	ino_t root = parent_inode->i_ino;
+	const char *name = child_dentry->d_name.name;
+	struct inode *inode;
+	if (root == 100)
+	{
+		if (!strcmp(name, "test.txt"))
+		{
+			inode = staticfs_get_inode(parent_inode->i_sb, NULL, S_IFREG, 0, 101);
+			inode->i_op = &staticfs_inode_ops;
+			inode->i_fop = NULL;
+			d_add(child_dentry, inode);
+		} else if (!strcmp(name, "file.txt"))
+		{
+			inode = staticfs_get_inode(parent_inode->i_sb, NULL, S_IFREG, 0, 102);
+			inode->i_op = &staticfs_inode_ops;
+			inode->i_fop = NULL;
+			d_add(child_dentry, inode);
+		} else if (!strcmp(name, "dir"))
+		{
+			inode = staticfs_get_inode(parent_inode->i_sb, NULL, S_IFDIR, 0, 103);
+			inode->i_op = &staticfs_inode_ops;
+			inode->i_fop = NULL;
+			d_add(child_dentry, inode);
+		}
+	}
+	return NULL;
+}
+
 
 struct inode *staticfs_get_inode(struct super_block *sb, const struct inode *dir, umode_t mode, dev_t dev, int i_ino)
 {
@@ -46,7 +143,9 @@ struct inode *staticfs_get_inode(struct super_block *sb, const struct inode *dir
 				inc_nlink(inode);
 				break;
 			case S_IFREG:
+				break;
 			case S_IFLNK:
+				break;
 			default:
 				printk(KERN_ERR "only root dir\n");
 				return NULL;
