@@ -6,6 +6,7 @@
 #include <linux/sched.h>
 #include <linux/fs_struct.h>
 #include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Pak Aleksandr");
@@ -112,8 +113,6 @@ static struct file_operations staticfs_dir_operations =
 static ssize_t staticfs_read(struct file *filp, char *buffer, size_t len, loff_t *offset)
 {
 	ino_t index = filp->f_path.dentry->d_inode->i_ino;
-	printk(KERN_INFO "read started, ino = %d\n", index);
-	printk(KERN_INFO "msgbuffer104 = %c\n", msg_buffers[104][0]);
 	ssize_t bytes_read = 0;
     	if (*msg_ptrs[index] == 0) 
     	{
@@ -127,6 +126,20 @@ static ssize_t staticfs_read(struct file *filp, char *buffer, size_t len, loff_t
         	bytes_read++;
     	}
 	return bytes_read;
+}
+
+static ssize_t staticfs_write(struct file *filp, const char *buffer, size_t len, loff_t *offset)
+{
+	if (len > MSG_BUFFER_LEN)
+   	{
+        	printk(KERN_ALERT "Too long message to write.\n"); 
+        	return -EINVAL;
+    	}
+
+	ino_t index = filp->f_path.dentry->d_inode->i_ino;
+    	copy_from_user(msg_buffers[index], buffer, len);
+    	msg_buffers[index][len] = '\0';
+    	return len;
 }
 
 static int staticfs_open(struct inode *inode, struct file *filp) 
@@ -151,7 +164,7 @@ static int staticfs_release(struct inode *inode, struct file *filp)
 static struct file_operations staticfs_file_operations = 
 {
 	.read = staticfs_read,
-	// .write = staticfs_write,
+	.write = staticfs_write,
     	.open = staticfs_open,
     	.release = staticfs_release
 };
@@ -277,7 +290,6 @@ static int staticfs_init(void)
 	strncpy(msg_buffers[101], "test\n", 5);
 	strncpy(msg_buffers[102], "Merry Christmas!\n", 17);
 	strncpy(msg_buffers[104], "Merry Christmas!\n", 17); 
-	size_t iter;
 	msg_ptrs[101] = msg_buffers[101];
 	msg_ptrs[102] = msg_buffers[102];
 	msg_ptrs[104] = msg_buffers[104];
