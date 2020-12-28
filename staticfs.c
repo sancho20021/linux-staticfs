@@ -15,8 +15,9 @@ MODULE_VERSION("0.01");
 
 struct timespec tm;
 
-#define FILES_NUMBER 105
+#define FILES_NUMBER 5
 #define MSG_BUFFER_LEN 64
+#define INO2IND(index) ((index) - 100)
 
 static int staticfs_open(struct inode *, struct file *);
 static int staticfs_release(struct inode *, struct file *);
@@ -26,6 +27,66 @@ static ssize_t staticfs_write(struct file *, const char *, size_t, loff_t *);
 static int staticfs_open_counts[FILES_NUMBER];
 static char msg_buffers[FILES_NUMBER][MSG_BUFFER_LEN];
 static char *msg_ptrs[FILES_NUMBER];
+static char file_names[FILES_NUMBER][20];
+
+static int root_files[3] = {101, 102, 0};  // simple lists of existing files
+static size_t root_files_size = 2;
+static int dir_files[2] = {104, 0};
+static size_t dir_files_size = 1;
+
+static bool present[FILES_NUMBER] = {true, true, true, true, true};
+
+// returns -1 if index >= list_size
+static int list_get(int *list, int index)
+{
+	if (index < 0)
+	{
+		return -1;
+	}
+	while(*list == -1 || index)
+	{
+		if (*list != -1)
+		{
+			index--;
+		}
+		list++;
+	}
+	if (*list != 0)
+	{
+		return *list;
+	} else
+	{
+		return -1;
+	}
+}
+
+// finds element in list
+// returns NULL if there is no such element
+static int* list_find(int *list, int value)
+{	
+	while (*list)
+	{
+		if (*list == value)
+		{
+			return list;
+		}
+		list++;
+	}
+	return NULL;
+}
+
+// deletes element at position index
+// returns 0 on success
+static int list_delete(int *list, int value)
+{
+	int *pos = list_find(list, value);
+	if (pos == NULL)
+	{
+		return -1;
+	}
+	*pos = -1;
+	return 0;
+}
 
 static int staticfs_iterate(struct file *filp, struct dir_context *ctx)
 {
@@ -55,24 +116,25 @@ static int staticfs_iterate(struct file *filp, struct dir_context *ctx)
 			}
 			else if (offset == 2)
 			{
-				strcpy(fsname, "test.txt");
-				ftype = DT_REG;
-				dino = 101;
-			}
-			else if (offset == 3)
-			{
-				strcpy(fsname, "file.txt");
-				ftype = DT_REG;
-				dino = 102;
-			} else if (offset == 4)
-			{
-				strcpy(fsname, "dir");
+				strcpy(fsname, file_names[3]);  // dir
 				ftype = DT_DIR;
 				dino = 103;
-			} else
-			{
-				return stored;
 			}
+			else 
+			{
+				int exp_ino;
+				exp_ino = list_get(root_files, (int)offset - 3);
+				if (exp_ino != -1)
+				{
+					strcpy(fsname, file_names[INO2IND(exp_ino)]);  // test
+					ftype = DT_REG;
+					dino = exp_ino;
+				} else
+				{
+					return stored;
+				}
+			}
+				
 		} else if (ino == 103)
 		{
 			if (offset == 0)
@@ -86,14 +148,19 @@ static int staticfs_iterate(struct file *filp, struct dir_context *ctx)
 				strcpy(fsname, "..");
 				ftype = DT_DIR;
 				dino = dentry->d_parent->d_inode->i_ino;
-			} else if (offset == 2)
+			} else 
 			{
-				strcpy(fsname, "file.txt");
-				ftype = DT_REG;
-				dino = 104;
-			} else
-			{
-				return stored;
+				int exp_ino;
+				exp_ino = list_get(dir_files, (int)offset - 2);
+				if (exp_ino != -1)
+				{
+					strcpy(fsname, file_names[INO2IND(exp_ino)]);  // file
+					ftype = DT_REG;
+					dino = exp_ino;
+				} else
+				{
+					return stored;
+				}
 			}
 		}	
 		dir_emit(ctx, fsname, strlen(fsname), dino, ftype);
@@ -112,7 +179,7 @@ static struct file_operations staticfs_dir_operations =
 
 static ssize_t staticfs_read(struct file *filp, char *buffer, size_t len, loff_t *offset)
 {
-	ino_t index = filp->f_path.dentry->d_inode->i_ino;
+	ino_t index = INO2IND(filp->f_path.dentry->d_inode->i_ino);
 	ssize_t bytes_read = 0;
     	if (*msg_ptrs[index] == 0) 
     	{
@@ -136,7 +203,7 @@ static ssize_t staticfs_write(struct file *filp, const char *buffer, size_t len,
         	return -EINVAL;
     	}
 
-	ino_t index = filp->f_path.dentry->d_inode->i_ino;
+	ino_t index = INO2IND(filp->f_path.dentry->d_inode->i_ino);
     	copy_from_user(msg_buffers[index], buffer, len);
     	msg_buffers[index][len] = '\0';
     	return len;
@@ -144,7 +211,7 @@ static ssize_t staticfs_write(struct file *filp, const char *buffer, size_t len,
 
 static int staticfs_open(struct inode *inode, struct file *filp) 
 {
-	ino_t index = inode->i_ino;
+	ino_t index = INO2IND(inode->i_ino);
 	if (staticfs_open_counts[index] > 0)
 	{
 		return -EBUSY;
@@ -155,7 +222,7 @@ static int staticfs_open(struct inode *inode, struct file *filp)
 }
 static int staticfs_release(struct inode *inode, struct file *filp) 
 {
-	ino_t index = inode->i_ino;
+	ino_t index = INO2IND(inode->i_ino);
 	staticfs_open_counts[index]--;
 	module_put(THIS_MODULE);
 	return 0;
@@ -173,9 +240,12 @@ struct inode *staticfs_get_inode(struct super_block *sb, const struct inode *dir
 
 static struct dentry *staticfs_lookup(struct inode *parent_inode, struct dentry *child_dentry, unsigned int flag);
 
+static int staticfs_unlink(struct inode *, struct dentry*);
+
 static struct inode_operations staticfs_inode_ops = 
 {
 	.lookup = staticfs_lookup,
+	.unlink = staticfs_unlink
 };
 
 static struct dentry *staticfs_lookup(struct inode *parent_inode, struct dentry *child_dentry, unsigned int flag)
@@ -185,13 +255,13 @@ static struct dentry *staticfs_lookup(struct inode *parent_inode, struct dentry 
 	struct inode *inode;
 	if (root == 100)
 	{
-		if (!strcmp(name, "test.txt"))
+		if (!strcmp(name, "test.txt") && present[INO2IND(101)])
 		{
 			inode = staticfs_get_inode(parent_inode->i_sb, NULL, S_IFREG, 0, 101);
 			inode->i_op = &staticfs_inode_ops;
 			inode->i_fop = &staticfs_file_operations;
 			d_add(child_dentry, inode);
-		} else if (!strcmp(name, "file.txt"))
+		} else if (!strcmp(name, "file.txt") && present[INO2IND(102)])
 		{
 			inode = staticfs_get_inode(parent_inode->i_sb, NULL, S_IFREG, 0, 102);
 			inode->i_op = &staticfs_inode_ops;
@@ -206,7 +276,7 @@ static struct dentry *staticfs_lookup(struct inode *parent_inode, struct dentry 
 		}
 	} else if (root == 103)
 	{
-		if (!strcmp(name, "file.txt"))
+		if (!strcmp(name, "file.txt") && present[INO2IND(104)])
 		{
 			inode = staticfs_get_inode(parent_inode->i_sb, NULL, S_IFREG, 0, 104);
 			inode->i_op = &staticfs_inode_ops;
@@ -216,7 +286,6 @@ static struct dentry *staticfs_lookup(struct inode *parent_inode, struct dentry 
 	}
 	return NULL;
 }
-
 
 struct inode *staticfs_get_inode(struct super_block *sb, const struct inode *dir, umode_t mode, dev_t dev, int i_ino)
 {
@@ -248,6 +317,30 @@ struct inode *staticfs_get_inode(struct super_block *sb, const struct inode *dir
 		}
 	}
 	return inode;
+}
+
+static int staticfs_unlink(struct inode *inode, struct dentry *dentry)
+{
+	ino_t parent_ino = inode->i_ino;
+	ino_t file_ino = dentry->d_inode->i_ino;
+	int success = -1;
+	if (!present[INO2IND(file_ino)])
+	{
+		return -EINVAL;
+	}
+	present[INO2IND(file_ino)] = false;
+	if (parent_ino == 100)
+	{
+		success = list_delete(root_files, file_ino);
+	} else if (parent_ino == 103)
+	{
+		success = list_delete(dir_files, file_ino);
+	}
+	if (success < 0)
+	{
+		return -EINVAL;
+	}
+	return 0;
 }
 
 int staticfs_fill_super(struct super_block *sb, void *data, int silent)
@@ -292,12 +385,17 @@ struct file_system_type staticfs_fs_type =
 
 static int staticfs_init(void)
 {
-	strncpy(msg_buffers[101], "test\n", 5);
-	strncpy(msg_buffers[102], "Merry Christmas!\n", 17);
-	strncpy(msg_buffers[104], "Merry Christmas!\n", 17); 
-	msg_ptrs[101] = msg_buffers[101];
-	msg_ptrs[102] = msg_buffers[102];
-	msg_ptrs[104] = msg_buffers[104];
+	strncpy(file_names[1], "test.txt", 8);
+	strncpy(file_names[2], "file.txt", 8);
+	strncpy(file_names[3], "dir", 3);
+	strncpy(file_names[4], "file.txt", 8);	
+
+	strncpy(msg_buffers[1], "test\n", 5);
+	strncpy(msg_buffers[2], "Merry Christmas!\n", 17);
+	strncpy(msg_buffers[4], "Merry Christmas!\n", 17); 
+	msg_ptrs[1] = msg_buffers[1];
+	msg_ptrs[2] = msg_buffers[2];
+	msg_ptrs[4] = msg_buffers[4];
 	
 	int ret;
 	ret = register_filesystem(&staticfs_fs_type);
