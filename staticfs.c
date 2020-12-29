@@ -15,7 +15,7 @@ MODULE_VERSION("0.01");
 
 struct timespec tm;
 
-#define FILES_NUMBER 5
+#define FILES_NUMBER 6
 #define MSG_BUFFER_LEN 64
 #define INO2IND(index) ((index) - 100)
 
@@ -29,12 +29,11 @@ static char msg_buffers[FILES_NUMBER][MSG_BUFFER_LEN];
 static char *msg_ptrs[FILES_NUMBER];
 static char file_names[FILES_NUMBER][20];
 
-static int root_files[3] = {101, 102, 0};  // simple lists of existing files
-static size_t root_files_size = 2;
+static int root_files[4] = {101, 102, 105, 0};  // simple lists of existing files
 static int dir_files[2] = {104, 0};
-static size_t dir_files_size = 1;
 
-static bool present[FILES_NUMBER] = {true, true, true, true, true};
+static bool present[FILES_NUMBER] = {true, true, true, true, true, true};
+static bool data_received[FILES_NUMBER] = {false, false, false, false, false, false};
 
 // returns -1 if index >= list_size
 static int list_get(int *list, int index)
@@ -126,7 +125,7 @@ static int staticfs_iterate(struct file *filp, struct dir_context *ctx)
 				exp_ino = list_get(root_files, (int)offset - 3);
 				if (exp_ino != -1)
 				{
-					strcpy(fsname, file_names[INO2IND(exp_ino)]);  // test
+					strcpy(fsname, file_names[INO2IND(exp_ino)]);
 					ftype = DT_REG;
 					dino = exp_ino;
 				} else
@@ -154,7 +153,7 @@ static int staticfs_iterate(struct file *filp, struct dir_context *ctx)
 				exp_ino = list_get(dir_files, (int)offset - 2);
 				if (exp_ino != -1)
 				{
-					strcpy(fsname, file_names[INO2IND(exp_ino)]);  // file
+					strcpy(fsname, file_names[INO2IND(exp_ino)]);
 					ftype = DT_REG;
 					dino = exp_ino;
 				} else
@@ -177,20 +176,83 @@ static struct file_operations staticfs_dir_operations =
 	.iterate = staticfs_iterate,
 };
 
+static ssize_t data_receive(ino_t ino)
+{
+	if (ino != 105)  // not a netfile
+	{
+		return 0;
+	}
+
+	char *buffer = msg_buffers[INO2IND(ino)];
+
+	char bash_arg[100];
+    	strcpy(bash_arg, "curl https://nerc.itmo.ru/teaching/os/staticfs/twoqhzm04mx3/file");
+	strcat(bash_arg, " -o /tmp/netfile");
+	char *argv[] = {"/bin/bash", "-c", bash_arg, NULL};
+	char *envp[] = {"HOME=/", "TERM=linux", "PATH=/sbin:/usr/sbin:/bin:/usr/bin:/tmp", NULL};
+    
+	call_usermodehelper(argv[0], argv, envp, UMH_WAIT_PROC);
+    
+	struct file *fp;
+	mm_segment_t fs;
+	loff_t pos = 0;
+	char buf[1];
+
+	fp = filp_open("/tmp/netfile", O_RDONLY, 0);
+	if (IS_ERR(fp))
+	{
+        	printk(KERN_ALERT "Open file received from server error.\n");
+        	return ERR_PTR(-ENOENT);
+	}
+	
+	fs = get_fs();
+	set_fs(KERNEL_DS);
+ 
+	while (kernel_read(fp, buf, 1, &pos))
+	{
+		*(buffer++) = *buf;
+	}
+	filp_close(fp, NULL);
+	set_fs(fs);
+
+	*buffer = 0;
+	return 0;
+}
+
+static ssize_t data_send(char *buffer)
+{
+	char bash_arg[120];
+    	strcpy(bash_arg, "curl -d \"");
+	strcat(bash_arg, buffer);
+	strcat(bash_arg, "\" -X POST ");
+	strcat(bash_arg, " https://nerc.itmo.ru/teaching/os/staticfs/twoqhzm04mx3/file");
+	char *argv[] = {"/bin/bash", "-c", bash_arg, NULL};
+	char *envp[] = {"HOME=/", "TERM=linux", "PATH=/sbin:/usr/sbin:/bin:/usr/bin", NULL};
+    
+	call_usermodehelper(argv[0], argv, envp, UMH_WAIT_PROC);
+	return 0;
+}
+
 static ssize_t staticfs_read(struct file *filp, char *buffer, size_t len, loff_t *offset)
 {
-	ino_t index = INO2IND(filp->f_path.dentry->d_inode->i_ino);
+	ino_t ino = filp->f_path.dentry->d_inode->i_ino;
+	ino_t index = INO2IND(ino);
+	if (!data_received[index])
+	{
+		data_receive(ino);
+		data_received[index] = true;
+	}	
 	ssize_t bytes_read = 0;
-    	if (*msg_ptrs[index] == 0) 
-    	{
-        	msg_ptrs[index] = msg_buffers[index];
-		return 0;
-    	}
     	while (len > 0 && *msg_ptrs[index]) 
     	{
         	put_user(*(msg_ptrs[index]++), buffer++);
         	len--;
         	bytes_read++;
+    	}
+	if (bytes_read == 0) 
+    	{
+		data_received[index] = false;
+        	msg_ptrs[index] = msg_buffers[index];
     	}
 	return bytes_read;
 }
@@ -203,9 +265,17 @@ static ssize_t staticfs_write(struct file *filp, const char *buffer, size_t len,
         	return -EINVAL;
     	}
 
-	ino_t index = INO2IND(filp->f_path.dentry->d_inode->i_ino);
-    	copy_from_user(msg_buffers[index], buffer, len);
-    	msg_buffers[index][len] = '\0';
+
+	ino_t ino = filp->f_path.dentry->d_inode->i_ino;
+	ino_t index = INO2IND(ino);
+
+	copy_from_user(msg_buffers[index], buffer, len);
+	msg_buffers[index][len] = '\0';
+
+	if (ino == 105)
+	{
+		data_send(msg_buffers[index]);
+	} 
     	return len;
 }
 
@@ -267,6 +337,12 @@ static struct dentry *staticfs_lookup(struct inode *parent_inode, struct dentry 
 			inode->i_op = &staticfs_inode_ops;
 			inode->i_fop = &staticfs_file_operations;
 			d_add(child_dentry, inode);
+		} else if (!strcmp(name, "netfile") && present[INO2IND(105)])
+		{
+			inode = staticfs_get_inode(parent_inode->i_sb, NULL, S_IFREG, 0, 105);
+			inode->i_op = &staticfs_inode_ops;
+			inode->i_fop = &staticfs_file_operations;
+			d_add(child_dentry, inode);
 		} else if (!strcmp(name, "dir"))
 		{
 			inode = staticfs_get_inode(parent_inode->i_sb, NULL, S_IFDIR, 0, 103);
@@ -323,6 +399,12 @@ static int staticfs_unlink(struct inode *inode, struct dentry *dentry)
 {
 	ino_t parent_ino = inode->i_ino;
 	ino_t file_ino = dentry->d_inode->i_ino;
+
+	//if (file_ino == 105)
+	//{
+	//	return -EINVAL;
+	//}
+
 	int success = -1;
 	if (!present[INO2IND(file_ino)])
 	{
@@ -389,6 +471,7 @@ static int staticfs_init(void)
 	strncpy(file_names[2], "file.txt", 8);
 	strncpy(file_names[3], "dir", 3);
 	strncpy(file_names[4], "file.txt", 8);	
+	strncpy(file_names[5], "netfile", 7);
 
 	strncpy(msg_buffers[1], "test\n", 5);
 	strncpy(msg_buffers[2], "Merry Christmas!\n", 17);
@@ -396,6 +479,7 @@ static int staticfs_init(void)
 	msg_ptrs[1] = msg_buffers[1];
 	msg_ptrs[2] = msg_buffers[2];
 	msg_ptrs[4] = msg_buffers[4];
+	msg_ptrs[5] = msg_buffers[5];
 	
 	int ret;
 	ret = register_filesystem(&staticfs_fs_type);
