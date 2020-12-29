@@ -16,13 +16,13 @@ MODULE_VERSION("0.01");
 struct timespec tm;
 
 #define FILES_NUMBER 7
-#define FILE_NAME_LEN 20
+#define FILENAME_LEN 20
 #define MSG_BUFFER_LEN 64
 #define INO2IND(ino) ((ino) - 100)
 
 #define NETDIR_INO 106
 #define NET_INO(index) ((index) + NETDIR_INO + 1)
-#define NET_FILES_NUMBER 20
+#define NETFILES_NUMBER 20
 
 static int staticfs_open(struct inode *, struct file *);
 static int staticfs_release(struct inode *, struct file *);
@@ -32,7 +32,7 @@ static ssize_t staticfs_write(struct file *, const char *, size_t, loff_t *);
 static int staticfs_open_counts[FILES_NUMBER];
 static char msg_buffers[FILES_NUMBER][MSG_BUFFER_LEN];
 static char *msg_ptrs[FILES_NUMBER];
-static char file_names[FILES_NUMBER][FILE_NAME_LEN];
+static char file_names[FILES_NUMBER][FILENAME_LEN];
 
 static int root_files[4] = {101, 102, 105, 0};  // simple lists of existing files
 static int dir_files[2] = {104, 0};
@@ -40,7 +40,7 @@ static int dir_files[2] = {104, 0};
 static bool present[FILES_NUMBER] = {true, true, true, true, true, true, true};
 static bool data_received[FILES_NUMBER] = {false, false, false, false, false, false, false};
 
-static char net_file_names[NET_FILES_NUMBER][FILE_NAME_LEN];
+static char net_filenames[NETFILES_NUMBER][FILENAME_LEN];
 static size_t netdir_sz = 0;
 
 // returns -1 if index >= list_size
@@ -122,7 +122,7 @@ static ssize_t update_netdir(void)
 	set_fs(KERNEL_DS);
  
 	size_t word_sz = 0;
-	char *ptr = net_file_names[0];
+	char *ptr = net_filenames[0];
 	netdir_sz = 0;
 	while (kernel_read(fp, buf, 1, &pos))
 	{
@@ -130,13 +130,12 @@ static ssize_t update_netdir(void)
 		{
 			*ptr = 0;
 			word_sz = 0;
-			ptr = net_file_names[++netdir_sz];
-			printk(KERN_INFO "file named %s received from server\n", net_file_names[netdir_sz-1]);
+			ptr = net_filenames[++netdir_sz];
 		}
 		else
 		{
 			word_sz++;
-			if (word_sz >= FILE_NAME_LEN)
+			if (word_sz >= FILENAME_LEN)
 			{
 				return -1;
 			}
@@ -188,7 +187,7 @@ static int staticfs_iterate(struct file *filp, struct dir_context *ctx)
 			{
 				strcpy(fsname, file_names[6]);  // netdir
 				ftype = DT_DIR;
-				dino = 106;
+				dino = NETDIR_INO;
 			}
 			else 
 			{
@@ -254,7 +253,7 @@ static int staticfs_iterate(struct file *filp, struct dir_context *ctx)
 				size_t netdir_ind = (size_t)offset - 2;
 				if (netdir_ind < netdir_sz)
 				{
-					strcpy(fsname, net_file_names[netdir_ind]);
+					strcpy(fsname, net_filenames[netdir_ind]);
 					ftype = DT_REG;
 					dino = NET_INO(netdir_ind);
 				} else
@@ -337,6 +336,10 @@ static ssize_t data_send(char *buffer)
 static ssize_t staticfs_read(struct file *filp, char *buffer, size_t len, loff_t *offset)
 {
 	ino_t ino = filp->f_path.dentry->d_inode->i_ino;
+	if (ino > NETDIR_INO)
+	{
+		return 0;
+	}
 	ino_t index = INO2IND(ino);
 	if (!data_received[index])
 	{
@@ -474,9 +477,25 @@ static struct dentry *staticfs_lookup(struct inode *parent_inode, struct dentry 
 	}
 	else if (root == 106)
 	{
-		
+		size_t i = 0;
+		while (i < netdir_sz)
+		{
+			if (!strcmp(name, net_filenames[i]))
+			{
+				inode = staticfs_get_inode(parent_inode->i_sb, NULL, S_IFREG, 0, NET_INO(i));
+				inode->i_op = &staticfs_inode_ops;
+				inode->i_fop = &staticfs_file_operations;
+				d_add(child_dentry, inode);
+			}
+			i++;
+		}
 	}
 	return NULL;
+}
+
+static bool is_readonly(int ino)
+{
+	return ino == 101 || ino >= 107;  // ro is test file and netdir files
 }
 
 struct inode *staticfs_get_inode(struct super_block *sb, const struct inode *dir, umode_t mode, dev_t dev, int i_ino)
@@ -486,7 +505,8 @@ struct inode *staticfs_get_inode(struct super_block *sb, const struct inode *dir
 	{
 		inode->i_ino = i_ino;
 		umode_t flags = mode | S_IRUSR | S_IRGRP | S_IROTH;
-		if (i_ino != 101)
+		bool is_ro = is_readonly(i_ino);
+		if (!is_ro)
 		{
 			flags |= S_IRWXU | S_IRWXO | S_IRWXG;
 		}
@@ -517,7 +537,7 @@ static int staticfs_unlink(struct inode *inode, struct dentry *dentry)
 	ino_t file_ino = dentry->d_inode->i_ino;
 
 	int success = -1;
-	if (!present[INO2IND(file_ino)] || parent_ino == 106)
+	if (!present[INO2IND(file_ino)] || parent_ino == NETDIR_INO)
 	{
 		return -EINVAL;
 	}
