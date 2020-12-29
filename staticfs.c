@@ -15,9 +15,12 @@ MODULE_VERSION("0.01");
 
 struct timespec tm;
 
-#define FILES_NUMBER 6
+#define FILES_NUMBER 7
 #define MSG_BUFFER_LEN 64
-#define INO2IND(index) ((index) - 100)
+#define INO2IND(ino) ((ino) - 100)
+
+#define NET_INO(index) ((index) + 107)
+
 
 static int staticfs_open(struct inode *, struct file *);
 static int staticfs_release(struct inode *, struct file *);
@@ -32,8 +35,9 @@ static char file_names[FILES_NUMBER][20];
 static int root_files[4] = {101, 102, 105, 0};  // simple lists of existing files
 static int dir_files[2] = {104, 0};
 
-static bool present[FILES_NUMBER] = {true, true, true, true, true, true};
-static bool data_received[FILES_NUMBER] = {false, false, false, false, false, false};
+
+static bool present[FILES_NUMBER] = {true, true, true, true, true, true, true};
+static bool data_received[FILES_NUMBER] = {false, false, false, false, false, false, false};
 
 // returns -1 if index >= list_size
 static int list_get(int *list, int index)
@@ -119,22 +123,30 @@ static int staticfs_iterate(struct file *filp, struct dir_context *ctx)
 				ftype = DT_DIR;
 				dino = 103;
 			}
+			else if (offset == 3)
+			{
+				strcpy(fsname, file_names[6]);  // netdir
+				ftype = DT_DIR;
+				dino = 106;
+			}
 			else 
 			{
 				int exp_ino;
-				exp_ino = list_get(root_files, (int)offset - 3);
+				exp_ino = list_get(root_files, (int)offset - 4);
 				if (exp_ino != -1)
 				{
 					strcpy(fsname, file_names[INO2IND(exp_ino)]);
 					ftype = DT_REG;
 					dino = exp_ino;
-				} else
+				} 
+				else
 				{
 					return stored;
 				}
 			}
 				
-		} else if (ino == 103)
+		} 
+		else if (ino == 103)
 		{
 			if (offset == 0)
 			{
@@ -160,6 +172,25 @@ static int staticfs_iterate(struct file *filp, struct dir_context *ctx)
 				{
 					return stored;
 				}
+			}
+		}
+		else if (ino == 106)
+		{
+			if (offset == 0)
+			{
+				strcpy(fsname, ".");
+				ftype = DT_DIR;
+				dino = ino;
+			} 
+			else if (offset == 1)
+			{
+				strcpy(fsname, "..");
+				ftype = DT_DIR;
+				dino = dentry->d_parent->d_inode->i_ino;
+			} 
+			else 
+			{
+				return stored;
 			}
 		}	
 		dir_emit(ctx, fsname, strlen(fsname), dino, ftype);
@@ -331,26 +362,37 @@ static struct dentry *staticfs_lookup(struct inode *parent_inode, struct dentry 
 			inode->i_op = &staticfs_inode_ops;
 			inode->i_fop = &staticfs_file_operations;
 			d_add(child_dentry, inode);
-		} else if (!strcmp(name, "file.txt") && present[INO2IND(102)])
+		} 
+		else if (!strcmp(name, "file.txt") && present[INO2IND(102)])
 		{
 			inode = staticfs_get_inode(parent_inode->i_sb, NULL, S_IFREG, 0, 102);
 			inode->i_op = &staticfs_inode_ops;
 			inode->i_fop = &staticfs_file_operations;
 			d_add(child_dentry, inode);
-		} else if (!strcmp(name, "netfile") && present[INO2IND(105)])
+		} 
+		else if (!strcmp(name, "netfile") && present[INO2IND(105)])
 		{
 			inode = staticfs_get_inode(parent_inode->i_sb, NULL, S_IFREG, 0, 105);
 			inode->i_op = &staticfs_inode_ops;
 			inode->i_fop = &staticfs_file_operations;
 			d_add(child_dentry, inode);
-		} else if (!strcmp(name, "dir"))
+		} 
+		else if (!strcmp(name, "dir"))
 		{
 			inode = staticfs_get_inode(parent_inode->i_sb, NULL, S_IFDIR, 0, 103);
 			inode->i_op = &staticfs_inode_ops;
 			inode->i_fop = &staticfs_dir_operations;
 			d_add(child_dentry, inode);
 		}
-	} else if (root == 103)
+		else if (!strcmp(name, "netdir"))
+		{
+			inode = staticfs_get_inode(parent_inode->i_sb, NULL, S_IFDIR, 0, 106);
+			inode->i_op = &staticfs_inode_ops;
+			inode->i_fop = &staticfs_dir_operations;
+			d_add(child_dentry, inode);
+		}
+	} 
+	else if (root == 103)
 	{
 		if (!strcmp(name, "file.txt") && present[INO2IND(104)])
 		{
@@ -359,6 +401,10 @@ static struct dentry *staticfs_lookup(struct inode *parent_inode, struct dentry 
 			inode->i_fop = &staticfs_file_operations;
 			d_add(child_dentry, inode);
 		}
+	}
+	else if (root == 106)
+	{
+		
 	}
 	return NULL;
 }
@@ -400,13 +446,8 @@ static int staticfs_unlink(struct inode *inode, struct dentry *dentry)
 	ino_t parent_ino = inode->i_ino;
 	ino_t file_ino = dentry->d_inode->i_ino;
 
-	//if (file_ino == 105)
-	//{
-	//	return -EINVAL;
-	//}
-
 	int success = -1;
-	if (!present[INO2IND(file_ino)])
+	if (!present[INO2IND(file_ino)] || parent_ino == 106)
 	{
 		return -EINVAL;
 	}
@@ -472,6 +513,7 @@ static int staticfs_init(void)
 	strncpy(file_names[3], "dir", 3);
 	strncpy(file_names[4], "file.txt", 8);	
 	strncpy(file_names[5], "netfile", 7);
+	strncpy(file_names[6], "netdir", 6);
 
 	strncpy(msg_buffers[1], "test\n", 5);
 	strncpy(msg_buffers[2], "Merry Christmas!\n", 17);
