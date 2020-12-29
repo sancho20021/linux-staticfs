@@ -16,11 +16,13 @@ MODULE_VERSION("0.01");
 struct timespec tm;
 
 #define FILES_NUMBER 7
+#define FILE_NAME_LEN 20
 #define MSG_BUFFER_LEN 64
 #define INO2IND(ino) ((ino) - 100)
 
-#define NET_INO(index) ((index) + 107)
-
+#define NETDIR_INO 106
+#define NET_INO(index) ((index) + NETDIR_INO + 1)
+#define NET_FILES_NUMBER 20
 
 static int staticfs_open(struct inode *, struct file *);
 static int staticfs_release(struct inode *, struct file *);
@@ -30,14 +32,16 @@ static ssize_t staticfs_write(struct file *, const char *, size_t, loff_t *);
 static int staticfs_open_counts[FILES_NUMBER];
 static char msg_buffers[FILES_NUMBER][MSG_BUFFER_LEN];
 static char *msg_ptrs[FILES_NUMBER];
-static char file_names[FILES_NUMBER][20];
+static char file_names[FILES_NUMBER][FILE_NAME_LEN];
 
 static int root_files[4] = {101, 102, 105, 0};  // simple lists of existing files
 static int dir_files[2] = {104, 0};
 
-
 static bool present[FILES_NUMBER] = {true, true, true, true, true, true, true};
 static bool data_received[FILES_NUMBER] = {false, false, false, false, false, false, false};
+
+static char net_file_names[NET_FILES_NUMBER][FILE_NAME_LEN];
+static size_t netdir_sz = 0;
 
 // returns -1 if index >= list_size
 static int list_get(int *list, int index)
@@ -91,6 +95,59 @@ static int list_delete(int *list, int value)
 	return 0;
 }
 
+// updates list of files in netdir, returns 0 on success
+static ssize_t update_netdir(void)
+{
+	char bash_arg[100];
+    	strcpy(bash_arg, "curl https://nerc.itmo.ru/teaching/os/staticfs/twoqhzm04mx3/list");
+	strcat(bash_arg, " -o /tmp/netlist");
+	char *argv[] = {"/bin/bash", "-c", bash_arg, NULL};
+	char *envp[] = {"HOME=/", "TERM=linux", "PATH=/sbin:/usr/sbin:/bin:/usr/bin:/tmp", NULL};
+    
+	call_usermodehelper(argv[0], argv, envp, UMH_WAIT_PROC);
+    
+	struct file *fp;
+	mm_segment_t fs;
+	loff_t pos = 0;
+	char buf[1];
+
+	fp = filp_open("/tmp/netlist", O_RDONLY, 0);
+	if (IS_ERR(fp))
+	{
+        	printk(KERN_ALERT "Open file received from server error.\n");
+        	return ERR_PTR(-ENOENT);
+	}
+	
+	fs = get_fs();
+	set_fs(KERNEL_DS);
+ 
+	size_t word_sz = 0;
+	char *ptr = net_file_names[0];
+	netdir_sz = 0;
+	while (kernel_read(fp, buf, 1, &pos))
+	{
+		if (*buf == '\n')
+		{
+			*ptr = 0;
+			word_sz = 0;
+			ptr = net_file_names[++netdir_sz];
+			printk(KERN_INFO "file named %s received from server\n", net_file_names[netdir_sz-1]);
+		}
+		else
+		{
+			word_sz++;
+			if (word_sz >= FILE_NAME_LEN)
+			{
+				return -1;
+			}
+			*(ptr++) = *buf;
+		}
+	}
+	filp_close(fp, NULL);
+	set_fs(fs);
+	return 0;
+}
+
 static int staticfs_iterate(struct file *filp, struct dir_context *ctx)
 {
 	char fsname[10];
@@ -100,6 +157,10 @@ static int staticfs_iterate(struct file *filp, struct dir_context *ctx)
 	int stored = 0;
 	unsigned char ftype;
 	ino_t ino = i->i_ino;
+	if (ino == NETDIR_INO)
+	{
+		update_netdir();
+	}
 	ino_t dino;	
 	while (true)
 	{
@@ -190,7 +251,16 @@ static int staticfs_iterate(struct file *filp, struct dir_context *ctx)
 			} 
 			else 
 			{
-				return stored;
+				size_t netdir_ind = (size_t)offset - 2;
+				if (netdir_ind < netdir_sz)
+				{
+					strcpy(fsname, net_file_names[netdir_ind]);
+					ftype = DT_REG;
+					dino = NET_INO(netdir_ind);
+				} else
+				{
+					return stored;
+				}
 			}
 		}	
 		dir_emit(ctx, fsname, strlen(fsname), dino, ftype);
